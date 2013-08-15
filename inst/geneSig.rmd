@@ -174,9 +174,7 @@ Next, we divide the data into training and testing data sets. This is done by ra
 
 ## Set seed
 nTrain <- floor(nSamples*2/3)
-seed <- as.integer((as.double(Sys.time())*1000) %% 2^25)
-seed
-set.seed(seed)
+set.seed(analysisSeed)
 
 ## Set up indices
 trainIndex <- sample(1:nSamples,size=nTrain)

@@ -5,7 +5,8 @@
   runMachine(discCEL, discMETA, validCEL = NULL,
     validMETA = NULL,
     reportTitle = "Gene Signature Development",
-    dirName = "geneSigOutput", openReport = TRUE)
+    dirName = "geneSigOutput", openReport = TRUE,
+    analysisSeed = 32313)
 }
 \arguments{
   \item{discCEL}{A character vector where entries are
@@ -34,6 +35,8 @@
 
   \item{openReport}{If TRUE, the HTML report is opened in
   the browser.}
+
+  \item{seed}{Set the seed for the analysis.}
 }
 \value{
   The directory with all of the output of the DSM.

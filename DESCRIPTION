@@ -9,21 +9,22 @@ Description: This function takes as input datasets for creation and validation
 Version: 0.1
 Author: Jeffrey Leek <jtleek@gmail.com>
 Maintainer: Jeffrey Leek <jtleek@gmail.com>
-Depends:knitr,
-	tspreg,
-	inSilicoMerging,
-	GEOquery,
-	affy,
-	frma,
-	hthgu133afrmavecs,
-	hgu133plus2frmavecs,
-	AnnotationDbi,
-	affyio,
-	survHD,
-	survAUC,
-	healthvis,
-	sva,
-	tspreg,
+Depends:
+    knitr,
+    tspreg,
+    inSilicoMerging,
+    GEOquery,
+    affy,
+    frma,
+    hthgu133afrmavecs,
+    hgu133plus2frmavecs,
+    AnnotationDbi,
+    affyio,
+    survHD,
+    survAUC,
+    healthvis,
+    sva,
+    tspreg,
     R (>= 3.0.1)
 License: MIT
 LazyData: true

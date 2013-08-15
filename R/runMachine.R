@@ -11,7 +11,8 @@
 #' @param predCEL (optional) AA character vector where entries are directories with the CEL files for predictive data sets
 #' @param predMETA (optional) A character vector with entries being csv files for predictive data sets
 #' @param dirName The base name of the directory to be created 
-#' @param openReport If TRUE, the HTML report is opened in the browser. 
+#' @param openReport If TRUE, the HTML report is opened in the browser.
+#' @param seed Set the seed for the analysis. 
 #' 
 #' @export
 #' 
@@ -21,7 +22,7 @@ runMachine <- function(discCEL, discMETA,
                        validCEL=NULL,validMETA=NULL, 
                        reportTitle="Gene Signature Development",
                        dirName="geneSigOutput", 
-                       openReport=TRUE){
+                       openReport=TRUE,analysisSeed=32313){
   
   require(knitrBootstrap)
   
