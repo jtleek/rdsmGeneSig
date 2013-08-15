@@ -1,0 +1,33 @@
+Package: rdsmGeneSig
+Title: A deterministic statistical machine for creating reproducible gene
+    signatures
+Description: This function takes as input datasets for creation and validation
+    of gene signatures, along with associated metadata. The output is an R
+    markdown and HTML document that outlines the creation of the signature and
+    an R function that can be used with a new sample to generate the
+    prediction.
+Version: 0.1
+Author: Jeffrey Leek <jtleek@gmail.com>
+Maintainer: Jeffrey Leek <jtleek@gmail.com>
+Depends:knitr,
+	tspreg,
+	inSilicoMerging,
+	GEOquery,
+	affy,
+	frma,
+	hthgu133afrmavecs,
+	hgu133plus2frmavecs,
+	AnnotationDbi,
+	affyio,
+	survHD,
+	survAUC,
+	healthvis,
+	sva,
+	tspreg,
+    R (>= 3.0.1)
+License: MIT
+LazyData: true
+Collate:
+    'rdsmGeneSig-package.r'
+    'runMachine.R'
+    'helper.R'

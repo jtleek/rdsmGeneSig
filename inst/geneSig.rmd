@@ -1,0 +1,492 @@
+`r reportTitle`
+========================================================
+
+About this report
+-----
+
+This is a fully reproducible signature development report created with the **rdsmGeneSig** deterministic statistical machine version **`r packageVersion("rdsmGeneSig")`**. The machine is available from Github at https://github.com/jtleek/rdsmGeneSig. 
+
+Before beginning the analysis we load the required R packages. 
+
+```{r loadPackages,warning=FALSE,message=FALSE}
+require(inSilicoMerging)
+require(GEOquery)
+require(affy)
+require(frma)
+require(hthgu133afrmavecs)
+require(hgu133plus2frmavecs)
+require(AnnotationDbi)
+require(affyio)
+require(survHD) 
+require(survAUC)
+require(healthvis)
+require(sva)
+require(tspreg)
+```
+
+
+```{r startTime,echo=FALSE}
+# Get the time
+  startTime <- format(Sys.time(), "_Date_%Y-%m-%d_Time_%H-%M-%S")
+```
+
+
+Obtain the discovery data set
+-----------------
+
+#### Load discovery metadata
+
+First we load in the discovery meta data nd merge them together. 
+
+```{r loadDiscMetaData}
+
+## Determine the number of data sets
+
+numDisc <- length(discMETA)
+
+## Load the data sets - if more than one load as a list
+if(numDisc > 1){
+  discMetaData <- vector("list",numDisc)
+  for(i in 1:numDisc){
+    discMetaData[[i]] <- read.csv(discMETA[i])
+  }
+}else{
+  discMetaData <-read.csv(discMETA)
+}
+```
+
+According to your inputs we discovered `r length(discMETA)` files. The files suggest that there are n=`r dim(discMetaData)[1]` and m=`r dim(discMetaData)[2]` variables in your data set. 
+
+#### Load discovery gene expression data
+
+Load in the discovery expression data and run [frozen robust multi-array average](http://www.bioconductor.org/packages/2.12/bioc/html/frma.html) normalization to allow for single-sample prediction. For more information on frma see [McCall et al. 2009](http://biostatistics.oxfordjournals.org/content/11/2/242.abstract)
+
+
+```{r loadDiscExprData}
+
+## Load the data sets - if more than one load as a list
+if(numDisc > 1){
+  discExpr <- discFileNames <- vector("list",numDisc)
+  for(i in 1:numDisc){
+    discFileNames <- list.files(discCEL[i],full.names=TRUE)
+    discAffyBatch <- read.affybatch(filenames=discFileNames)
+    discExpr[[i]] <- frma(discAffyBatch, summarize="robust_weighted_average")
+    pData(discExpr[[i]]) <- cbind(data.frame(fullFilePath=discFileNames),pData(discExpr[[i]]))
+  }
+}else{
+  discFileNames <- list.files(discCEL,full.names=TRUE)
+  discAffyBatch <- read.affybatch(filenames=discFileNames)
+  discExpr <- frma(discAffyBatch, summarize="robust_weighted_average")
+  pData(discExpr) <- cbind(data.frame(fullFilePath=discFileNames),pData(discExpr))  
+}
+```
+
+We identified `r dim(discExpr)[2]` samples collected from the `r annotation(discExpr)` platform. We discovered `r numDisc` expression sets. `r if(numDisc > 1){discMergeText}else{discMergeText2}`.
+
+
+
+```{r mergeDiscData}
+if(numDisc > 1){
+  mergedDiscMeta <- Reduce(function(...) base::merge(..., all=T), 
+                           discMetaData)
+  mergedDiscExpr <- inSilicoMerging::merge(discExpr)
+}else{
+  mergedDiscMeta <- discMetaData
+  mergedDiscExpr <- discExpr
+}
+```
+
+The next step is to make sure that the file names match at least one of the columns and keep only those files with matching meta data. 
+
+```{r combineDiscData}
+
+# Find the column with the highest number of matching files
+exprCelFiles <- rownames(pData(mergedDiscExpr))
+percentMatchedNames <- apply(mergedDiscMeta,2,function(x){mean(exprCelFiles %in% as.character(x))})
+fileNameIndex <- which.max(percentMatchedNames)
+
+dat <- mergedDiscMeta[match(exprCelFiles,mergedDiscMeta[,fileNameIndex]),]
+rownames(dat) <- rownames(pData(mergedDiscExpr))
+pData(mergedDiscExpr) <- cbind(pData(mergedDiscExpr),dat)
+fileNameIndex <- fileNameIndex + 2
+```
+
+We identified the file names in your metadata with variable name `r names(pData(mergedDiscExpr))[fileNameIndex]`.`r if(mean(pData(mergedDiscExpr)[,fileNameIndex] == rownames(pData(mergedDiscExpr))) < 1){text <- "WARNING! File names in meta data and expression data do not perfectly match.\n"; tex;}` Next we collect information on RNA quality and batch effects. 
+
+```{r getDiscTech}
+## Get dimensions
+nSamples <- dim(mergedDiscExpr)[2]; nFeatures <- dim(mergedDiscExpr)[1]
+
+## Make batch variables
+
+batchVars <- makeBatch(mergedDiscExpr)
+
+## If the batch variables have variation include them
+## in the pDatap
+pData(mergedDiscExpr) <- cbind(pData(mergedDiscExpr),
+                               pdBatch=batchVars$pdBatch,
+                               scanBatch=batchVars$pdBatch,
+                               rinVals=batchVars$rin)
+
+phenoVar <- getPheno(mergedDiscExpr)
+```
+
+
+Next we consider possible confounding variables in the study design. We look for measures of RNA quality and batch effects in the metadata and also attempt to identify scan dates from the microarrays. 
+
+
+```{r batchOutCor, echo=FALSE}
+scanBatchVals <- pdBatchVals <- rinVals <- FALSE
+
+sbtext <- pdtext <- rtext <- ""
+
+if(any(!is.na(pData(mergedDiscExpr)$rinVals))){
+  rinVals <- TRUE
+  tmpVar <- pData(mergedDiscExpr)$rinVals
+  tmpOut <- phenoVar
+  rinP <- anova(coxph(tmpOut ~ tmpVar))[2,4]
+  rtext <- batchOutText(tmpVar,tmpOut,1)
+}
+
+if(any(!is.na(pData(mergedDiscExpr)$pdBatch))){
+  pdBatchVals <- TRUE
+  tmpVar <- pData(mergedDiscExpr)$pdBatch
+  tmpOut <- phenoVar
+  pdbatchP <- anova(coxph(tmpOut ~ tmpVar))[2,4]
+  pdtext <- batchOutText(tmpVar,tmpOut,2)
+}
+
+if(any(!is.na(pData(mergedDiscExpr)$scanBatch))){
+  scanBatchVals <- TRUE
+  tmpVar <- pData(mergedDiscExpr)$scanBatch
+  tmpOut <- phenoVar
+  scanbatchP <- anova(coxph(tmpOut ~ tmpVar))[2,4]
+  sbtext <- batchOutText(tmpVar,tmpOut,3)
+}
+
+```
+
+`r rtext` `r pdtext` `r sbtext`
+
+Next, we divide the data into training and testing data sets. This is done by randomly subdividing the data set into a training set with 2/3 of the samples and a test set with 1/3 of the samples. 
+
+```{r testTrain}
+
+## Set seed
+nTrain <- floor(nSamples*2/3)
+seed <- as.integer((as.double(Sys.time())*1000) %% 2^25)
+seed
+set.seed(seed)
+
+## Set up indices
+trainIndex <- sample(1:nSamples,size=nTrain)
+testIndex <- (1:nSamples)[-trainIndex]
+
+## Separate data sets
+discTrain <- mergedDiscExpr[,trainIndex]
+discTest <- mergedDiscExpr[,testIndex]
+```
+
+We created a training set of size ntrain=`r length(trainIndex)` and a test set of size ntest=`r length(testIndex)`.
+
+
+Now we use [frozen surrogate variable analysis](http://arxiv.org/abs/1301.3947) to get batch-effect removed versions of split training data. 
+
+
+```{r trainSplit}
+
+## Get the expression matrix
+
+traindat <- exprs(discTrain)
+testdat <- exprs(discTest)
+
+## Set up the model matrix
+mod <- model.matrix(~phenoVar[trainIndex,2])
+
+## Perform fsva
+svaObj <- sva(traindat,mod)
+fsvaObject <- fsva(traindat,mod,svaObj,testdat)
+
+## Get clean versions of the data
+cleanTrain  <- fsvaObject$db
+cleanTest <- fsvaObject$new
+```
+
+We fit the model to the first half of the clean training data.
+
+```{r fitFirstModel}
+
+## Build the prediction model
+predModel <- tspreg(cleanTrain,phenoVar[trainIndex],
+                    npair=20,nvars=1000)
+trainPairs <- calculateTspairs(cleanTrain,predModel$index)
+testPairs <-  calculateTspairs(cleanTest,predModel$index)
+
+## Set the number of pairs max at 10
+auc <- rep(NA,10)
+
+for(i in 1:10){
+  form <- formula(paste0("phenoVar[trainIndex] ~",paste(colnames(trainPairs$pairMat)[1:i],collapse="+")))
+  tmpModel <- coxph(form,data=trainPairs$pairMat)
+  auc[i] <- AUC.uno(phenoVar[trainIndex],
+                    phenoVar[testIndex],
+                    predict(tmpModel,newdata=testPairs$pairMat),
+                    times=quantileSequence(phenoVar[testIndex][,1],10))$iauc
+}
+
+nPair <- which.max(auc)
+```
+
+Our analysis identified that the optimal number of pairs for prediction is `r nPair` with a time varying AUC of `r auc[nPair]`. 
+
+
+
+Now we clean the full training set and build the predictive model. 
+
+
+```{r trainModelFinal}
+## Set up the model matrices
+mod <- model.matrix(~phenoVar[,2])
+
+## Perform sva
+svaObj <- sva(exprs(mergedDiscExpr),mod)
+fsvaObject <- fsva(exprs(mergedDiscExpr),mod,svaObj,exprs(mergedDiscExpr))
+cleanMerged <- fsvaObject$db
+
+
+predModel <- tspreg(cleanMerged,phenoVar,
+                    npair=nPair,nvars=1000)
+
+tsPairs <- calculateTspairs(cleanMerged,predModel$index)
+
+
+modelPredictors <- as.data.frame(sapply(tsPairs$pairMat,
+                                        as.factor))
+form <- formula(paste0("Surv(survivalTime,outcome)~",paste(colnames(modelPredictors),collapse="+")))
+
+modelPredictors <- cbind(survivalTime=as.numeric(pData(mergedDiscExpr)$survivalTime),
+                         outcome=pData(mergedDiscExpr)$outcome,
+                         modelPredictors)
+
+
+modelFit <- coxph(form,data=modelPredictors,model=TRUE)
+
+```
+
+In the training set we fit a cox proportional hazards regression model and obtained an estimated concordance of `r summary(modelFit)$concordance[1]`. The model fit is summarized in the output chunk below. 
+
+
+```{r summarizeModel}
+summary(modelFit)
+```
+
+
+Create the prediction functions
+-------------------------------
+
+Now we make the prediction function based on the classifier we have developed. We save the functions to the file **geneSig.rda**.
+
+```{r predictionFunction}
+
+
+predictTsp <- function(eSet){
+  cleanData <- fsva(exprs(mergedDiscExpr),mod,svaObj,exprs(eSet))$new
+  tsPairs <- calculateTspairs(cleanData,predModel$index)
+  modelPredictors <- as.data.frame(sapply(tsPairs$pairMat,
+                                        as.factor))
+  sf <- survfit(modelFit,modelPredictors)
+  return(sf)
+}
+
+save(predictTsp,mergedDiscExpr,svaObj,mod,predModel,modelFit,file=paste0(workDir,"/geneSig.rda"))
+```
+
+
+To use the function you just type:
+
+```{r howTo,eval=FALSE}
+## To apply the function you need to pass an expression set, the returned values are
+## the expected event times. 
+load("geneSig.rda")
+predictions <- predictTsp(eSet)
+```
+
+
+Load in the validation data
+-------------------------
+
+Now we load in the validation metadata. 
+
+```{r loadValidMetaData}
+
+## Determine the number of data sets
+
+numValid <- length(validMETA)
+
+## Load the data sets - if more than one load as a list
+if(numValid > 1){
+  validMetaData <- vector("list",numValid)
+  for(i in 1:numValid){
+    validMetaData[[i]] <- read.csv(validMETA[i])
+  }
+}else{
+  validMetaData <-read.csv(validMETA)
+}
+```
+
+We identified `r dim(discExpr)[2]` samples collected from the `r annotation(discExpr)` platform. 
+
+Load in the validation expression data and run [frozen robust multi-array average](http://www.bioconductor.org/packages/2.12/bioc/html/frma.html) normalization to allow for single-sample prediction. For more information on frma see [McCall et al. 2009](http://biostatistics.oxfordjournals.org/content/11/2/242.abstract)
+
+
+```{r loadValidExprData}
+
+## Load the data sets - if more than one load as a list
+if(numValid > 1){
+  validExpr <- validFileNames <- vector("list",numValid)
+  for(i in 1:numValid){
+    validFileNames <- list.files(validCEL[i],full.names=TRUE)
+    validAffyBatch <- read.affybatch(filenames=validFileNames)
+    validExpr[[i]] <- frma(validAffyBatch, summarize="robust_weighted_average")
+    pData(validExpr[[i]]) <- cbind(data.frame(fullFilePath=validFileNames),pData(validExpr[[i]]))
+  }
+}else{
+  validFileNames <- list.files(validCEL,full.names=TRUE)
+  validAffyBatch <- read.affybatch(filenames=validFileNames)
+  validExpr <- frma(validAffyBatch, summarize="robust_weighted_average")
+  pData(validExpr) <- cbind(data.frame(fullFilePath=validFileNames),pData(validExpr))  
+}
+
+```
+
+We discovered `r numDisc` expression sets. `r if(numDisc > 1){discMergeText}else{discMergeText2}`.
+
+```{r mergeValidData}
+if(numValid > 1){
+  mergedValidMeta <- Reduce(function(...) base::merge(..., all=T), validMetaData)
+  mergedValidExpr <- inSilicoMerging::merge(validExpr)
+}else{
+  mergedValidMeta <- validMetaData
+  mergedValidExpr <- validExpr
+}
+```
+
+The next step is to make sure that the file names match at least one of the columns and keep only those files with matching meta data. 
+
+```{r combineValidData}
+
+# Find the column with the highest number of matching files
+exprCelFiles <- rownames(pData(mergedValidExpr))
+percentMatchedNames <- apply(mergedValidMeta,2,function(x){mean(exprCelFiles %in% as.character(x))})
+fileNameIndex <- which.max(percentMatchedNames)
+
+dat <- mergedValidMeta[match(exprCelFiles,mergedValidMeta[,fileNameIndex]),]
+rownames(dat) <- rownames(pData(mergedValidExpr))
+pData(mergedValidExpr) <- cbind(pData(mergedValidExpr),dat)
+fileNameIndex <- fileNameIndex + 2
+```
+
+Confirm that the filenames from the read CEL files correspond to the filenames in the meta data. 
+
+```{r checkFileNameValid}
+if(mean(pData(mergedValidExpr)[,fileNameIndex] == rownames(pData(mergedValidExpr))) < 1){
+  print("WARNING! File names in meta data and expression data do not match.\n")
+}
+```
+
+
+
+Next we get some information about variables, including data on batch effects. 
+
+
+```{r getValidTech}
+## Get dimensions
+nSamples <- dim(mergedValidExpr)[2]; nFeatures <- dim(mergedValidExpr)[1]
+
+## Make batch variables
+
+batchVars <- makeBatch(mergedValidExpr)
+
+## If the batch variables have variation include them
+## in the pDatap
+pData(mergedValidExpr) <- cbind(pData(mergedValidExpr),
+                               pdBatch=batchVars$pdBatch,
+                               scanBatch=batchVars$pdBatch,
+                               rinVals=batchVars$rin)
+
+```
+
+Next we find the phenotype variable and apply the predictor to the validation data set. 
+
+
+```{r getValidPheno}
+validPhenoVar <- getPheno(mergedValidExpr)
+validData <- fsva(exprs(mergedDiscExpr),mod,svaObj,exprs(mergedValidExpr))$new
+validPairs <- calculateTspairs(validData,predModel$index)
+validPredictors <- as.data.frame(sapply(validPairs$pairMat,
+                                        as.factor))
+
+validPredictors <- cbind(survivalTime=as.numeric(pData(mergedValidExpr)$survivalTime),
+                         outcome=pData(mergedValidExpr)$outcome,
+                         validPredictors)
+
+aucObj <- AUC.uno(phenoVar,validPhenoVar,
+        predict(modelFit,newdata=validPredictors),
+        times = quantileSequence(validPhenoVar[,1],10))
+```
+
+
+This is a plot of the time varying AUC of our prediction applied to the test set. We obtained an integrated AUC of `r aucObj$iauc`. 
+
+
+```{r plotAUC}
+plot(aucObj)
+```
+
+
+
+Versions of the software used
+-----
+
+Here we list all versions of the software that were used for this analysis for reproducibility. 
+
+
+```{r endTime,echo=FALSE}
+  # Get the end time
+  endTime <- format(Sys.time(), "_Date_%Y-%m-%d_Time_%H-%M-%S")
+```
+
+```{r sessionInfo}
+sessionInfo()
+cat("Analysis started \n")
+startTime
+cat("Analysis ended \n")
+endTime
+```
+
+Citations
+-----
+
+Here we list all relevant citations for the analyses that were performed to be included in any publication based on running the **rdsmGeneSig** machine. 
+
+```{r citations}
+citation("inSilicoMerging")
+citation("sva")
+citation("frma")
+citation("affy")
+citation("knitr")
+citation("survHD")
+citation("pROC")
+citation("healthvis")
+citation("survAUC")
+```
+
+
+Create a dynamic graphic
+---------
+
+```{r dynamicGraphic}
+hvObject <- survivalVis(modelFit,data=modelPredictors,plot=FALSE)
+save(hvObject,file=paste0(workDir,"/dynamic-plot.rda"))
+```
+
